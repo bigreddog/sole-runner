@@ -1,0 +1,6 @@
+{
+  "name": "sole-runner", "version": "0.1.0", "private": true, "type": "module",
+  "description": "A 3D mountain trail companion for the Sole F85",
+  "scripts": {"start":"node scripts/serve.mjs", "dev":"node scripts/serve.mjs", "build":"node scripts/build.mjs", "test":"node verification/core.test.mjs", "test:browser":"node verification/browser.mjs"},
+  "devDependencies": {"playwright":"1.56.1"}
+}
