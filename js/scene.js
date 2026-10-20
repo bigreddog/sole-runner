@@ -60,7 +60,7 @@ export class TrailScene {
       leg.add(mesh(new THREE.CylinderGeometry(.085,.065,.4,7),skin,0,-.2));
       const knee=new THREE.Group();knee.position.y=-.4;knee.add(mesh(new THREE.CylinderGeometry(.065,.05,.4,7),skin,0,-.2),mesh(new THREE.BoxGeometry(.28,.11,.14),shoe,.07,-.43));leg.add(knee);this.runner.add(leg);this.legs.push({leg,knee});
       const arm=new THREE.Group();arm.position.set(0,1.37,side*.28);arm.add(mesh(new THREE.CylinderGeometry(.065,.055,.3,7),shirt,0,-.14));
-      const fore=new THREE.Group();fore.position.y=-.3;fore.rotation.z=-1.3;fore.add(mesh(new THREE.CylinderGeometry(.05,.04,.28,7),skin,0,-.14));arm.add(fore);this.body.add(arm);this.arms.push(arm);
+      const fore=new THREE.Group();fore.position.y=-.3;fore.rotation.z=1.3;fore.add(mesh(new THREE.CylinderGeometry(.05,.04,.28,7),skin,0,-.14));arm.add(fore);this.body.add(arm);this.arms.push(arm);
     }
     this.runner.scale.setScalar(1.5);this.runner.position.set(0,.08,0);
   }

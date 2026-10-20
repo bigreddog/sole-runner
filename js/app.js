@@ -3,9 +3,12 @@ import { Treadmill, inclinationCommand } from './ble.js';
 import { TrailScene } from './scene.js';
 import { ScreenWakeLock } from './wake-lock.js';
 import { downloadTCX } from './tcx.js';
+import { HeartRateMonitor, currentHeartRate } from './heart-rate.js';
 const $=id=>document.getElementById(id);
 let session=null,scene=null,available=true,busy=false,auto=false,controlBusy=false,lastTarget=null,lastControl=0,lastFrame=performance.now(),lastUI=0,previewDistance=0;
 const telemetry={},received={};let noticeTimer;
+let sensorHR={hr:null,received:0},hrBusy=false,hrName=null;
+const heartRate=new HeartRateMonitor({onMetrics:({hr})=>{sensorHR={hr,received:performance.now()};},onDisconnect:()=>{sensorHR={hr:null,received:0};hrName=null;message('Heart-rate monitor disconnected. Treadmill HR will be used if available.');updateUI();}});
 const names={ridge:'Alpine ridge',meadow:'Pine meadow',summit:'Summit approach',repeats:'Switchback repeats'};
 const wake=new ScreenWakeLock({navigator,document,onStatus:text=>$('wake-status').textContent=text});
 function message(text,sticky=false){clearTimeout(noticeTimer);$('message').textContent=text;$('message').hidden=false;if(!sticky)noticeTimer=setTimeout(()=>$('message').hidden=true,7000);}
@@ -15,12 +18,22 @@ function graphicsError(text){available=false;document.body.classList.add('scene-
 const treadmill=new Treadmill({onMetrics:data=>{if(session?.demo)return;Object.assign(telemetry,data);for(const key of Object.keys(data))received[key]=performance.now();},onDisconnect:()=>{pause('Treadmill disconnected. The app is paused. Use the console for belt control, reconnect, then resume.');connectionUI();},onDiagnostics:report=>$('diagnostics').textContent=JSON.stringify(report,null,2)});
 try{scene=new TrailScene($('scene'),graphicsError);}catch{graphicsError('3D requires WebGL. Enable hardware acceleration or try another browser.');}
 function metrics(now=performance.now()){
-  if(session?.demo)return {speed:$('demo-speed').valueAsNumber/3.6,grade:gradeAt(session.profile,session.distance)};
-  return Object.fromEntries(['speed','grade','hr'].map(k=>[k,received[k]&&now-received[k]<5000?telemetry[k]:null]));
+  const hr=currentHeartRate(now,sensorHR,session?.demo?null:{hr:telemetry.hr,received:received.hr??-Infinity});
+  if(session?.demo)return {speed:$('demo-speed').valueAsNumber/3.6,grade:gradeAt(session.profile,session.distance),...hr};
+  return {...Object.fromEntries(['speed','grade'].map(k=>[k,received[k]&&now-received[k]<5000?telemetry[k]:null])),...hr};
 }
 function connectionUI(){const connected=treadmill.connected;$('connection').textContent=connected?'● Treadmill connected':'○ Treadmill offline';$('live').disabled=!connected||!available||busy;$('connect').textContent=connected?'Reconnect treadmill':'Connect treadmill via Bluetooth';$('auto-incline').disabled=!connected||!treadmill.canIncline||!!session?.demo||session?.status!=='running';}
 async function connect(){if(busy)return;pause();busy=true;connectionUI();try{const name=await treadmill.connect();$('device-detail').textContent=`${name} · ${treadmill.canIncline?'optional incline control available':'read-only telemetry'}`;message('Connected. Start the belt on your console, then start or resume your run.');}catch(error){message(error.message,true);}finally{busy=false;connectionUI();}}
 $('connect').onclick=connect;$('reconnect').onclick=connect;
+async function connectHR(){
+  if(hrBusy)return;
+  if(session?.status==='running')pause();
+  hrBusy=true;sensorHR={hr:null,received:0};hrName=null;updateUI();
+  try{hrName=await heartRate.connect();message(`Connected to ${hrName}. Heart rate will appear when readings arrive.${session?.status==='paused'?' Resume your run when ready.':''}`);}
+  catch(error){message(error.message,true);}finally{hrBusy=false;updateUI();}
+}
+$('connect-hr').onclick=connectHR;$('reconnect-hr').onclick=connectHR;
+$('disconnect-hr').onclick=()=>{heartRate.disconnect();sensorHR={hr:null,received:0};hrName=null;updateUI();};
 function begin(demo){
   if(!$('run-form').reportValidity()||!available)return;
   if(!demo&&!treadmill.connected){message('Connect your treadmill first.');return;}
@@ -53,7 +66,7 @@ $('sky').onchange=()=>scene?.setSky($('sky').value);
 $('camera').onclick=()=>{if(!scene)return;scene.mode=scene.mode==='side'?'trail':'side';$('camera').textContent=scene.mode==='side'?'Switch to trail camera':'Switch to side camera';};
 $('fullscreen').onclick=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{message('Fullscreen is unavailable in this browser.');}};
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&session?.status==='running')pause('App paused while in the background. Resume when ready. The belt remains under console control.');lastFrame=performance.now();});
-window.addEventListener('pagehide',()=>{pause();treadmill.disconnect();wake.release();});
+window.addEventListener('pagehide',()=>{pause();treadmill.disconnect();heartRate.disconnect();wake.release();});
 function chart(){
   if(!session)return;const start=Math.floor(session.distance/3000)*3000;let line='';
   for(let i=0;i<=150;i++){const grade=gradeAt(session.profile,start+i*20);line+=`${i?'L':'M'}${i*4},${70-grade*5.5} `;}
@@ -63,7 +76,13 @@ function chart(){
   $('profile-caption').textContent=session.demo?'PLANNED GRADE · DEMO':auto?'PLANNED GRADE · AUTO':'PLANNED GRADE · REFERENCE';
 }
 function updateUI(){
-  connectionUI();if(!session)return;const data=metrics(),speed=data.speed;
+  connectionUI();const data=metrics(),speed=data.speed;
+  for(const id of ['connect-hr','reconnect-hr']){$(id).disabled=hrBusy;$(id).textContent=hrBusy?'Connecting heart-rate monitor…':heartRate.connected?'Reconnect heart-rate monitor':'Connect heart-rate monitor';}
+  $('disconnect-hr').hidden=!heartRate.connected;
+  $('hr-device-detail').textContent=heartRate.connected?`${hrName||'Heart-rate monitor'} · ${data.source==='monitor'?'receiving HR':'waiting for a fresh HR reading'}`:data.source==='treadmill'?'Receiving heart rate from treadmill.':'HR uses treadmill data or an optional Bluetooth monitor.';
+  $('hr').textContent=Number.isFinite(data.hr)?Math.round(data.hr):'—';
+  $('hr').title=data.source==='monitor'?'Bluetooth heart-rate monitor':data.source==='treadmill'?'Treadmill heart rate':'No fresh heart-rate reading';
+  if(!session)return;
   $('run-kind').textContent=session.demo?'DEMO RUN · SIMULATED DATA':auto?'LIVE RUN · AUTO INCLINE':'LIVE RUN · FOLLOW TREADMILL';
   $('route-name').textContent=names[session.profile];$('run-status').textContent={ready:'Ready when you are',running:'One step closer to higher ground.',paused:'Paused · resume when you’re ready.',finished:'Trail complete. Take a breath.'}[session.status];
   $('speed').textContent=Number.isFinite(speed)?(speed*3.6).toFixed(1):'—';$('pace').textContent=speed>0?timeText(1000/speed):'—';$('grade').textContent=Number.isFinite(data.grade)?data.grade.toFixed(1):'—';

@@ -28,6 +28,12 @@ Automatic incline is off by default. If the treadmill advertises incline target 
 
 F85 behavior varies by revision: see the [QZ F85 ENT report](https://github.com/cagnulein/qdomyos-zwift/issues/2385) and [F85 compatibility investigation](https://github.com/cagnulein/qdomyos-zwift/issues/1468). Physical telemetry, range reporting, acknowledgement behavior and incline movement must be verified on the user's treadmill. Automated tests use mock peripherals.
 
+## Heart rate
+
+The run dashboard shows **HR (bpm)**. Fresh HR from the treadmill is used automatically. To use a separate chest strap or optical monitor, tap **Connect heart-rate monitor** on setup or in Run tools and choose a Bluetooth Heart Rate Service device. Pairing during a run pauses the app; resume explicitly after closing tools. A paired watch must broadcast standard Bluetooth HR to be discoverable.
+
+A fresh separate monitor takes priority over treadmill HR. Missing, zero, stale (five seconds) or lost-contact readings show a dash, with fallback to fresh treadmill HR when available. Monitor disconnection does not pause the run. Run tools shows monitor status and a disconnect button. HR is recorded in TCX whenever available, including real monitor readings during a demo; demo speed/distance remain simulated. No HR readings are invented.
+
 ## Trail and session behavior
 
 - Alpine ridge, Pine meadow, Summit approach and Switchback repeats provide reference incline profiles over distance. Duration is 5–180 minutes. A profile chart shows planned grade over a 3 km window; manual live mode uses the actual reported incline, even when it differs from the plan.
@@ -48,7 +54,7 @@ npm start
 npm run test:browser
 ```
 
-Protocol/session tests check optional FTMS fields, signed grades, truncated packets, incline ranges and quantization, acknowledgements, timeouts, cancellation, measured-distance integration and export. Browser checks cover desktop and Android portrait/landscape, 3D rendering, demo progress, pause/resume, camera, lighting, export and finish. Screenshots are saved under ignored `verification/results/`.
+Protocol/session tests check optional FTMS fields, signed grades, truncated packets, incline ranges and quantization, acknowledgements, timeouts, cancellation, measured-distance integration and export. Browser checks cover desktop and Android portrait/landscape, 3D rendering, arm/leg opposition and forward elbow bend, demo progress, pause/resume, camera, lighting, HR pairing/disconnection/export and finish. Screenshots are saved under ignored `verification/results/`.
 
 ## Credits
 
