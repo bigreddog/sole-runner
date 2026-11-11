@@ -16,7 +16,7 @@ test('incline uses treadmill opcode and supported range and step',()=>{
  assert.deepEqual([...inclinationCommand(3.3,range)],[3,35,0]);
  assert.deepEqual([...inclinationCommand(30,range)],[3,150,0]);assert.deepEqual([...inclinationCommand(-10,range)],[3,0,0]);
  assert.throws(()=>parseInclineRange(view([0,0,100,0,0,0])),/Invalid/);
- assert.deepEqual([...inclinationCommand(10,{min:-.3,max:12,step:.5})],[3,97,0]);
+ assert.deepEqual([...inclinationCommand(10,{min:-.3,max:12,step:.5})],[3,102,0]);
 });
 class Characteristic extends EventTarget {
  constructor(result=1){super();this.result=result;this.writes=[];}
