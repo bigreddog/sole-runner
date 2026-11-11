@@ -3,3 +3,17 @@
 /* Keep all six metrics readable on small Android displays. */
 @media(max-width:600px){.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));row-gap:16px}.metrics>div{padding:0 13px}.metrics>div:nth-child(3){border-right:0}.metrics label span{display:inline;margin-left:5px}.metrics strong{font-size:23px}}
 @media(max-height:550px) and (min-width:600px){.metrics>div{padding:0 9px}}
+
+/* Timed training setup and current phase. */
+#trail-settings{margin-top:18px}
+#timed-settings{border:1px solid #ffffff26;border-radius:6px;padding:14px;margin:18px 0}
+#timed-settings legend{font-size:11px;color:var(--lime);padding:0 6px}
+.phase-fields{display:grid;grid-template-columns:1fr 65px 75px;gap:9px;align-items:center;margin-bottom:14px}
+.phase-fields>span{font-size:11px}
+.phase-fields label{font-size:9px;margin-bottom:6px}
+.phase-fields input{padding:10px 7px}
+.phase-fields output{display:block;padding:10px 7px;color:var(--lime);font-size:12px}
+.plan-summary{font-size:11px;line-height:1.8;color:var(--lime)}
+.plan-summary.error{color:#ffb29d}
+#phase-status{max-width:320px;color:var(--lime);font-size:11px;line-height:1.6}
+@media(max-height:550px) and (min-width:600px){#phase-status{max-width:280px;font-size:10px;margin:4px 0}}

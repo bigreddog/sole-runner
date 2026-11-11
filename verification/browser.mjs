@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
-const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||undefined,headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
 const results=new URL('./results/',import.meta.url);await mkdir(results,{recursive:true});
 try{
  for(const [name,width,height] of [['desktop',1440,1000],['android-portrait',412,915],['android-landscape',915,412]]){
@@ -30,7 +30,18 @@ try{
    });
    for(const limbs of pose)for(const limb of limbs){assert.ok(limb.forward>0,'forearm bends towards the running direction');assert.ok(limb.arm*limb.leg<=0,'arm counters the same-side leg');}
   }
+  assert.equal(await page.locator('#minutes').inputValue(),'45');
+  assert.equal(await page.locator('#sustained-minutes').textContent(),'35');
+  assert.match(await page.locator('#plan-summary').textContent(),/5 min at 0% → 35 min at 10% → 5 min at -5%/);
+  await page.locator('#minutes').fill('10');assert.equal(await page.locator('#run-form').evaluate(form=>form.checkValidity()),false);
+  await page.locator('#training-mode').selectOption('trail');assert.equal(await page.locator('#run-form').evaluate(form=>form.checkValidity()),true);
+  await page.locator('#minutes').fill('45');await page.locator('#training-mode').selectOption('timed');
+  await page.locator('#sustained-grade').fill('8');assert.match(await page.locator('#plan-summary').textContent(),/35 min at 8%/);
+  await page.locator('#sustained-grade').fill('10');
   await page.getByRole('button',{name:/Explore in demo/}).click();
+  assert.match(await page.locator('#phase-status').textContent(),/Warm-up · target 0%/);
+  assert.equal(await page.locator('#chart-end').textContent(),'45 min');
+  assert.equal(await page.locator('#grade').textContent(),'0.0');
   await page.waitForTimeout(3500);assert.equal(await page.locator('#speed').textContent(),'9.0');assert.ok(Number(await page.locator('#distance').textContent())>0);
   await page.getByRole('button',{name:/Pause run/}).click();const elapsed=await page.locator('#elapsed').textContent();await page.waitForTimeout(1100);assert.equal(await page.locator('#elapsed').textContent(),elapsed);
   await page.getByRole('button',{name:/Resume run/}).click();

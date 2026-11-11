@@ -25,15 +25,24 @@ export function parseInclineRange(value) {
   return range;
 }
 export function inclinationCommand(grade, range) {
-  if (!Number.isFinite(grade) || !range || range.step <= 0) throw new Error('Invalid incline target.');
-  // Conservative app envelope; never request decline or over 10%.
-  const lower = Math.max(0,range.min), upper = Math.min(10,range.max);
+  if (!Number.isFinite(grade) || !range || ![range.min, range.max, range.step].every(Number.isFinite) || range.step <= 0 || range.min > range.max) throw new Error('Invalid incline target.');
+  // F85 envelope, further bounded by the connected machine's advertised range.
+  const lower = Math.max(-6,range.min), upper = Math.min(15,range.max);
   const first = Math.ceil((lower-range.min)/range.step - 1e-8), last = Math.floor((upper-range.min)/range.step + 1e-8);
   if (first > last) throw new Error('No supported incline in the app range.');
   const step = Math.max(first,Math.min(last,Math.round((grade-range.min)/range.step)));
   const bytes = new Uint8Array(3); bytes[0] = 3;
   new DataView(bytes.buffer).setInt16(1,Math.round((range.min + step*range.step)*10),true);
   return bytes;
+}
+export function validateWorkoutIncline(workout, range) {
+  if (!workout) return;
+  for (const phase of workout.phases) {
+    const bytes = inclinationCommand(phase.grade, range);
+    const applied = new DataView(bytes.buffer).getInt16(1, true) / 10;
+    if (Math.abs(applied - phase.grade) > 0.051)
+      throw new Error(`${phase.name} grade ${phase.grade}% is not supported by this treadmill (range ${range.min}% to ${range.max}%, step ${range.step}%). Edit the workout or follow it manually.`);
+  }
 }
 export class Treadmill {
   constructor({onMetrics=()=>{}, onDisconnect=()=>{}, onDiagnostics=()=>{}}={}) {

@@ -1,5 +1,5 @@
-import { RunSession, gradeAt, timeText } from './workout.js';
-import { Treadmill, inclinationCommand } from './ble.js';
+import { RunSession, createTimedWorkout, gradeAt, timeText } from './workout.js';
+import { Treadmill, inclinationCommand, validateWorkoutIncline } from './ble.js';
 import { TrailScene } from './scene.js';
 import { ScreenWakeLock } from './wake-lock.js';
 import { downloadTCX } from './tcx.js';
@@ -15,14 +15,16 @@ function message(text,sticky=false){clearTimeout(noticeTimer);$('message').textC
 function disableAuto(){auto=false;$('auto-incline').checked=false;lastTarget=null;treadmill.control?.cancelQueued();}
 function pause(reason){session?.pause();disableAuto();wake.setActive(false);if(reason)message(reason,true);updateUI();}
 function graphicsError(text){available=false;document.body.classList.add('scene-error');pause(text);$('live').disabled=true;}
-const treadmill=new Treadmill({onMetrics:data=>{if(session?.demo)return;Object.assign(telemetry,data);for(const key of Object.keys(data))received[key]=performance.now();},onDisconnect:()=>{pause('Treadmill disconnected. The app is paused. Use the console for belt control, reconnect, then resume.');connectionUI();},onDiagnostics:report=>$('diagnostics').textContent=JSON.stringify(report,null,2)});
+const treadmill=new Treadmill({onMetrics:data=>{if(session?.demo&&!$('hud').hidden)return;Object.assign(telemetry,data);for(const key of Object.keys(data))received[key]=performance.now();},onDisconnect:()=>{pause('Treadmill disconnected. The app is paused. Use the console for belt control, reconnect, then resume.');connectionUI();},onDiagnostics:report=>$('diagnostics').textContent=JSON.stringify(report,null,2)});
 try{scene=new TrailScene($('scene'),graphicsError);}catch{graphicsError('3D requires WebGL. Enable hardware acceleration or try another browser.');}
 function metrics(now=performance.now()){
-  const hr=currentHeartRate(now,sensorHR,session?.demo?null:{hr:telemetry.hr,received:received.hr??-Infinity});
-  if(session?.demo)return {speed:$('demo-speed').valueAsNumber/3.6,grade:gradeAt(session.profile,session.distance),...hr};
+  const hr=currentHeartRate(now,sensorHR,session?.demo&&!$('hud').hidden?null:{hr:telemetry.hr,received:received.hr??-Infinity});
+  if(session?.demo&&!$('hud').hidden)return {speed:$('demo-speed').valueAsNumber/3.6,grade:session.targetGrade,...hr};
   return {...Object.fromEntries(['speed','grade'].map(k=>[k,received[k]&&now-received[k]<5000?telemetry[k]:null])),...hr};
 }
-function connectionUI(){const connected=treadmill.connected;$('connection').textContent=connected?'● Treadmill connected':'○ Treadmill offline';$('live').disabled=!connected||!available||busy;$('connect').textContent=connected?'Reconnect treadmill':'Connect treadmill via Bluetooth';$('auto-incline').disabled=!connected||!treadmill.canIncline||!!session?.demo||session?.status!=='running';}
+function connectionUI(){const connected=treadmill.connected;$('connection').textContent=connected?'● Treadmill connected':'○ Treadmill offline';$('live').disabled=!connected||!available||busy;$('connect').textContent=connected?'Reconnect treadmill':'Connect treadmill via Bluetooth';$('auto-incline').disabled=!connected||!treadmill.canIncline||!!session?.demo||session?.status!=='running';
+$('setup-auto').disabled=!connected||!treadmill.canIncline||busy;
+$('incline-help').textContent=connected&&treadmill.canIncline?`Treadmill supports ${treadmill.range.min}% to ${treadmill.range.max}% in ${treadmill.range.step}% steps. Automatic mode checks every timed phase before starting.`:'Connect a treadmill to enable automatic incline, or follow the targets manually.';}
 async function connect(){if(busy)return;pause();busy=true;connectionUI();try{const name=await treadmill.connect();$('device-detail').textContent=`${name} · ${treadmill.canIncline?'optional incline control available':'read-only telemetry'}`;message('Connected. Start the belt on your console, then start or resume your run.');}catch(error){message(error.message,true);}finally{busy=false;connectionUI();}}
 $('connect').onclick=connect;$('reconnect').onclick=connect;
 async function connectHR(){
@@ -34,14 +36,68 @@ async function connectHR(){
 }
 $('connect-hr').onclick=connectHR;$('reconnect-hr').onclick=connectHR;
 $('disconnect-hr').onclick=()=>{heartRate.disconnect();sensorHR={hr:null,received:0};hrName=null;updateUI();};
-function begin(demo){
+function readOptions(demo = false) {
+  const minutes = $('minutes').valueAsNumber;
+  const workout = $('training-mode').value === 'timed' ? createTimedWorkout({
+    minutes,
+    warmupMinutes: $('warmup-minutes').valueAsNumber,
+    warmupGrade: $('warmup-grade').valueAsNumber,
+    sustainedGrade: $('sustained-grade').valueAsNumber,
+    cooldownMinutes: $('cooldown-minutes').valueAsNumber,
+    cooldownGrade: $('cooldown-grade').valueAsNumber,
+  }) : null;
+  return { minutes, workout, profile: $('profile').value, demo };
+}
+function previewPlan() {
+  const timed = $('training-mode').value === 'timed';
+  $('timed-settings').hidden = !timed; $('timed-settings').disabled = !timed;
+  $('trail-settings').hidden = timed; $('profile').disabled = timed;
+  $('minutes').setCustomValidity('');
+  try {
+    const options = readOptions();
+    $('sustained-minutes').textContent = options.workout?.phases.find(p => p.name === 'Sustained').minutes ?? '—';
+    $('plan-summary').textContent = options.workout
+      ? options.workout.phases.map(p => `${p.minutes} min at ${p.grade}%`).join(' → ')
+      : 'Trail grade varies with distance. Choose a timed workout to hold a fixed grade.';
+    $('plan-summary').classList.remove('error');
+  } catch (error) {
+    $('sustained-minutes').textContent = '—';
+    $('plan-summary').textContent = error.message; $('plan-summary').classList.add('error');
+    $('minutes').setCustomValidity(error.message);
+  }
+}
+$('run-form').addEventListener('input', previewPlan);
+$('training-mode').addEventListener('change', previewPlan);
+async function begin(demo){
+  if(busy)return;
+  previewPlan();
   if(!$('run-form').reportValidity()||!available)return;
   if(!demo&&!treadmill.connected){message('Connect your treadmill first.');return;}
-  if(demo)treadmill.disconnect();disableAuto();
-  session=new RunSession({minutes:$('minutes').valueAsNumber,profile:$('profile').value,demo});
-  document.body.classList.add('running');$('setup').hidden=true;$('hud').hidden=false;$('tools').close();$('message').hidden=true;
-  session.start();lastFrame=performance.now();wake.setActive(true);connectionUI();chart();updateUI();
-  if(!demo)message('Run started. App pause and finish do not stop the belt; use your treadmill console.');
+  const options = readOptions(demo), next = new RunSession(options);
+  const shouldAuto = !demo && $('setup-auto').checked;
+  busy=true;connectionUI();$('demo').disabled=true;
+  try {
+    disableAuto();
+    if(shouldAuto){
+      if(!treadmill.canIncline)throw new Error('This treadmill does not offer automatic incline.');
+      validateWorkoutIncline(next.workout,treadmill.range);
+      if(!Number.isFinite(telemetry.grade)||performance.now()-(received.grade??-Infinity)>=5000)throw new Error('Wait for a fresh treadmill incline reading before starting automatic control.');
+      await treadmill.enableIncline();
+      await treadmill.setIncline(next.targetGrade);
+    }
+    if(demo)treadmill.disconnect();
+    session=next;
+    auto=shouldAuto;$('auto-incline').checked=auto;
+    lastControl=performance.now();
+    lastTarget=auto?Array.from(inclinationCommand(session.targetGrade,treadmill.range)).join(','):null;
+    document.body.classList.add('running');$('setup').hidden=true;$('hud').hidden=false;$('tools').close();$('message').hidden=true;
+    session.start();lastFrame=performance.now();wake.setActive(true);chart();updateUI();
+    if(!demo)message(auto?'Workout incline control active. Belt speed and stop remain on the console.':'Run started in manual incline mode. Follow the phase targets on your console or enable automatic incline in Run tools.');
+  } catch(error) {
+    disableAuto();
+    if(shouldAuto)treadmill.disconnect();
+    message(error.message,true);
+  } finally { busy=false;$('demo').disabled=false;connectionUI(); }
 }
 $('run-form').onsubmit=e=>{e.preventDefault();begin(true);};$('live').onclick=()=>begin(false);
 $('pause').onclick=()=>{
@@ -59,7 +115,7 @@ $('auto-incline').onchange=async()=>{
   if(!$('auto-incline').checked){disableAuto();message('Automatic incline off. The treadmill keeps its current incline; adjust on the console.');return;}
   if(controlBusy){$('auto-incline').checked=false;return;}
   const activeSession=session;controlBusy=true;$('auto-incline').disabled=true;
-  try{await treadmill.enableIncline();if(activeSession!==session||session.status!=='running'||!$('auto-incline').checked)return;auto=true;lastTarget=null;lastControl=0;message('Automatic incline enabled, limited to supported steps between 0% and 10%.');}
+  try{validateWorkoutIncline(activeSession.workout,treadmill.range);await treadmill.enableIncline();if(activeSession!==session||session.status!=='running'||!$('auto-incline').checked)return;auto=true;lastTarget=null;lastControl=-Infinity;message('Automatic incline enabled within the treadmill’s supported range.');}
   catch(error){disableAuto();message(error.message,true);}finally{controlBusy=false;connectionUI();}
 };
 $('sky').onchange=()=>scene?.setSky($('sky').value);
@@ -68,12 +124,27 @@ $('fullscreen').onclick=async()=>{try{if(document.fullscreenElement)await docume
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&session?.status==='running')pause('App paused while in the background. Resume when ready. The belt remains under console control.');lastFrame=performance.now();});
 window.addEventListener('pagehide',()=>{pause();treadmill.disconnect();heartRate.disconnect();wake.release();});
 function chart(){
-  if(!session)return;const start=Math.floor(session.distance/3000)*3000;let line='';
-  for(let i=0;i<=150;i++){const grade=gradeAt(session.profile,start+i*20);line+=`${i?'L':'M'}${i*4},${70-grade*5.5} `;}
+  if(!session)return;
+  let line='', marker, startLabel, endLabel;
+  const y = grade => 70 - (grade + 6) / 21 * 65;
+  if(session.workout){
+    for(const [i,p] of session.workout.phases.entries()){
+      line+=`${i?'L':'M'}${p.start/session.duration*600},${y(p.grade)} L${p.end/session.duration*600},${y(p.grade)} `;
+    }
+    marker=session.elapsed/session.duration*600;startLabel='0 min';endLabel=`${session.duration/60} min`;
+    $('profile-chart').setAttribute('aria-label','Planned grade by active workout time');
+  }else{
+    const start=Math.floor(session.distance/3000)*3000;
+    for(let i=0;i<=150;i++){
+      line+=`${i?'L':'M'}${i*4},${y(gradeAt(session.profile,start+i*20))} `;
+    }
+    marker=(session.distance-start)/3000*600;startLabel=`${start/1000} km`;endLabel=`${start/1000+3} km`;
+    $('profile-chart').setAttribute('aria-label','Planned grade over the next three kilometres');
+  }
   $('chart-line').setAttribute('d',line);$('chart-area').setAttribute('d',line+'L600,75 L0,75 Z');
-  const marker=(session.distance-start)/3000*600;$('chart-marker').setAttribute('x1',marker);$('chart-marker').setAttribute('x2',marker);
-  $('chart-start').textContent=`${start/1000} km`;$('chart-end').textContent=`${start/1000+3} km`;
-  $('profile-caption').textContent=session.demo?'PLANNED GRADE · DEMO':auto?'PLANNED GRADE · AUTO':'PLANNED GRADE · REFERENCE';
+  $('chart-marker').setAttribute('x1',marker);$('chart-marker').setAttribute('x2',marker);
+  $('chart-start').textContent=startLabel;$('chart-end').textContent=endLabel;
+  $('profile-caption').textContent=session.demo?'PLANNED GRADE · DEMO':auto?'PLANNED GRADE · AUTO':'PLANNED GRADE · MANUAL';
 }
 function updateUI(){
   connectionUI();const data=metrics(),speed=data.speed;
@@ -84,7 +155,8 @@ function updateUI(){
   $('hr').title=data.source==='monitor'?'Bluetooth heart-rate monitor':data.source==='treadmill'?'Treadmill heart rate':'No fresh heart-rate reading';
   if(!session)return;
   $('run-kind').textContent=session.demo?'DEMO RUN · SIMULATED DATA':auto?'LIVE RUN · AUTO INCLINE':'LIVE RUN · FOLLOW TREADMILL';
-  $('route-name').textContent=names[session.profile];$('run-status').textContent={ready:'Ready when you are',running:'One step closer to higher ground.',paused:'Paused · resume when you’re ready.',finished:'Trail complete. Take a breath.'}[session.status];
+  $('route-name').textContent=session.workout?'Sustained grade':names[session.profile];$('run-status').textContent={ready:'Ready when you are',running:'One step closer to higher ground.',paused:'Paused · resume when you’re ready.',finished:'Trail complete. Take a breath.'}[session.status];
+  $('phase-status').textContent=session.phase?`${session.phase.name} · target ${session.targetGrade}% · ${timeText(Math.max(0,session.phase.end-session.elapsed))} left in phase`:'';
   $('speed').textContent=Number.isFinite(speed)?(speed*3.6).toFixed(1):'—';$('pace').textContent=speed>0?timeText(1000/speed):'—';$('grade').textContent=Number.isFinite(data.grade)?data.grade.toFixed(1):'—';
   $('distance').textContent=(session.distance/1000).toFixed(2);$('ascent').textContent=Math.round(session.ascent);$('elapsed').textContent=timeText(session.elapsed);$('duration').textContent=timeText(session.duration);
   $('pause').textContent=session.status==='running'?'Pause run Ⅱ':session.status==='finished'?'Run complete ✓':'Resume run ▷';$('pause').disabled=session.status==='finished';chart();
@@ -92,7 +164,7 @@ function updateUI(){
 async function control(now,data){
   if(!auto||controlBusy||!session||session.status!=='running'||now-lastControl<5000)return;
   if(!Number.isFinite(data.grade)){disableAuto();message('Incline telemetry is missing. Automatic incline turned off.',true);return;}
-  const target=gradeAt(session.profile,session.distance),bytes=inclinationCommand(target,treadmill.range),key=Array.from(bytes).join(',');
+  const target=session.targetGrade,bytes=inclinationCommand(target,treadmill.range),key=Array.from(bytes).join(',');
   if(lastTarget===key)return;
   controlBusy=true;lastControl=now;
   try{await treadmill.setIncline(target);if(auto)lastTarget=key;}catch(error){pause('Incline control failed: '+error.message+' Check the console before resuming.');treadmill.disconnect();connectionUI();}finally{controlBusy=false;}
@@ -109,4 +181,5 @@ function frame(now){
   if(available)scene?.render({distance:visible?session.distance:previewDistance,grade:visible?(data.grade??0):4,speed:visible?(data.speed??0):0,dt:Math.min(gap,.1),running:visible&&session.status==='running',preview:!visible});
   if(now-lastUI>200){updateUI();lastUI=now;}requestAnimationFrame(frame);
 }
+previewPlan();
 requestAnimationFrame(frame);

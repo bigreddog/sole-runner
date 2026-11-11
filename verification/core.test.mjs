@@ -1,8 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {parseTreadmill,parseInclineRange,inclinationCommand,Treadmill} from '../js/ble.js';
+import {parseTreadmill,parseInclineRange,inclinationCommand,Treadmill,validateWorkoutIncline} from '../js/ble.js';
 import {FTMSControl} from '../js/ftms-control.js';
-import {RunSession,gradeAt} from '../js/workout.js';
+import {RunSession,gradeAt,createTimedWorkout,phaseAt} from '../js/workout.js';
 import {toTCX} from '../js/tcx.js';
 function view(bytes){return new DataView(Uint8Array.from(bytes).buffer);}
 test('FTMS parses speed, average speed, 24-bit distance, signed incline and optional heart rate',()=>{
@@ -14,7 +14,7 @@ test('FTMS rejects truncated optional fields without publishing partial measurem
 test('incline uses treadmill opcode and supported range and step',()=>{
  const range=parseInclineRange(view([0,0,150,0,5,0]));
  assert.deepEqual([...inclinationCommand(3.3,range)],[3,35,0]);
- assert.deepEqual([...inclinationCommand(30,range)],[3,100,0]);assert.deepEqual([...inclinationCommand(-10,range)],[3,0,0]);
+ assert.deepEqual([...inclinationCommand(30,range)],[3,150,0]);assert.deepEqual([...inclinationCommand(-10,range)],[3,0,0]);
  assert.throws(()=>parseInclineRange(view([0,0,100,0,0,0])),/Invalid/);
  assert.deepEqual([...inclinationCommand(10,{min:-.3,max:12,step:.5})],[3,97,0]);
 });
@@ -75,4 +75,40 @@ test('HR peripheral subscribes, ignores malformed packets, cleans up and reports
 test('TCX exports real HR readings and omits unavailable HR',()=>{
  const s=new RunSession();s.start();s.tick(1,{speed:2.5,grade:3,hr:147});s.tick(1,{speed:2.5,grade:3,hr:null});
  const xml=toTCX(s);assert.match(xml,/<HeartRateBpm><Value>147<\/Value><\/HeartRateBpm>/);assert.equal((xml.match(/<HeartRateBpm>/g)||[]).length,1);
+});
+
+test('45-minute workout has exact constant-grade phases at every boundary',()=>{
+ const w=createTimedWorkout();assert.equal(w.duration,2700);
+ assert.deepEqual(w.phases.map(p=>[p.name,p.start,p.end,p.grade]),[
+  ['Warm-up',0,300,0],['Sustained',300,2400,10],['Cool-down',2400,2700,-5]
+ ]);
+ for(const seconds of [0,150,299.999])assert.equal(phaseAt(w,seconds).grade,0);
+ for(const seconds of [300,1000,2399.999])assert.equal(phaseAt(w,seconds).grade,10);
+ for(const seconds of [2400,2600,2700])assert.equal(phaseAt(w,seconds).grade,-5);
+});
+test('timed phases depend on active time, not speed, distance or paused time',()=>{
+ const s=new RunSession({workout:createTimedWorkout()});s.start();
+ s.tick(300,{speed:0,grade:0});assert.equal(s.targetGrade,10);assert.equal(s.distance,0);
+ s.pause();s.tick(500,{speed:10,grade:10});assert.equal(s.elapsed,300);assert.equal(s.targetGrade,10);
+ s.start();s.tick(2099,{speed:3,grade:10});assert.equal(s.targetGrade,10);
+ s.tick(1,{speed:3,grade:10});assert.equal(s.targetGrade,-5);
+ s.tick(300,{speed:3,grade:-5});assert.equal(s.status,'finished');assert.equal(s.elapsed,2700);
+});
+test('phase options validate duration and grades, calculate sustained time and allow skipped ends',()=>{
+ const custom=createTimedWorkout({minutes:60,warmupMinutes:10,warmupGrade:1,sustainedGrade:8,cooldownMinutes:7,cooldownGrade:-3});
+ assert.equal(custom.phases[1].minutes,43);assert.equal(phaseAt(custom,600).grade,8);
+ const flat=createTimedWorkout({warmupMinutes:0,cooldownMinutes:0,sustainedGrade:0});
+ assert.equal(flat.phases.length,1);assert.equal(phaseAt(flat,0).name,'Sustained');
+ for(const options of [{minutes:10},{minutes:0},{minutes:NaN},{minutes:45.5},{warmupMinutes:-1},{warmupMinutes:41},{sustainedGrade:16},{cooldownGrade:-7},{sustainedGrade:NaN}])
+  assert.throws(()=>createTimedWorkout(options));
+});
+test('decline uses signed FTMS encoding and respects hardware limits and steps',()=>{
+ const range={min:-6,max:15,step:1};
+ assert.deepEqual([...inclinationCommand(-5,range)],[3,206,255]);
+ assert.deepEqual([...inclinationCommand(-30,range)],[3,196,255]);
+ assert.deepEqual([...inclinationCommand(30,range)],[3,150,0]);
+ assert.doesNotThrow(()=>validateWorkoutIncline(createTimedWorkout(),range));
+ assert.throws(()=>validateWorkoutIncline(createTimedWorkout(),{min:0,max:15,step:1}),/Cool-down grade -5%/);
+ assert.throws(()=>validateWorkoutIncline(createTimedWorkout({sustainedGrade:10.5}),range),/Sustained grade/);
+ assert.throws(()=>validateWorkoutIncline(createTimedWorkout(),{min:-6,max:8,step:1}),/Sustained grade/);
 });
